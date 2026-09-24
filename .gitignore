@@ -1,0 +1,60 @@
+# --- Python & Bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual Environments ---
+venv/
+.venv/
+env/
+
+# --- Secrets & Environment Variables (مهم جداً) ---
+.env
+.env.*
+!.env.example
+railway-credentials.json
+*.key
+*.pem
+
+# --- Database ---
+*.db
+*.sqlite
+*.sqlite3
+llm_service.db
+
+# --- Logs ---
+*.log
+service.log
+logs/
+
+# --- Testing & Coverage ---
+.coverage
+htmlcov/
+.pytest_cache/
+coverage.xml
+
+# --- IDE & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Model Weights & Internal State (Binary/Large Files) ---
+*.pkl
+*.npz
+*.h5
+*.pt
+# Model state and internal manifests
+llm_model.json
+release*.json
+release(*).json
+todo_list*.json
+todo_list(*).json
+*credentials*.json
+src/models/llm_model.json
+
+# --- Docker ---
+docker-compose.override.yml
+.railway-credentials.json
+articles/*
+test_auth.py

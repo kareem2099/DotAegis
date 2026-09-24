@@ -1,0 +1,85 @@
+name: DotAegis CI/CD
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install requests pytest
+
+    - name: Verify Feature Extractor (35 features)
+      run: |
+        python -c "
+        import numpy as np
+        from src.feature_extractor import extract
+        feats = extract('sk-live-test1234567890abcdef', 'const key = \"sk-live-test1234567890abcdef\";', 'key')
+        assert len(feats) == 35, f'Expected 35 features, got {len(feats)}'
+        print('✅ Feature extractor returns exactly 35 features')
+        "
+
+    - name: Verify Model Architecture & Backprop
+      run: |
+        python -c "
+        from src.model import CustomLLM, ModelConfig
+        import numpy as np
+        cfg = ModelConfig()
+        m = CustomLLM(cfg)
+        feats = np.random.randn(35)
+        loss = m.train_step('sk-live-test1234567890', feats, 'high')
+        assert loss is not None and not np.isnan(loss), 'Train step returned NaN loss'
+        print(f'✅ Model architecture and backpropagation validated (loss={loss:.4f})')
+        "
+
+    - name: Verify Model Database Persistence Round-Trip
+      env:
+        DATABASE_URL: sqlite:///./ci_test.db
+        SECRET_KEY: ci-test-secret-key-1234567890abcdef
+        EXTENSION_SHARED_SECRET: ci-dummy-shared-secret-mock-token-123
+      run: |
+        python -c "
+        import os
+        from src.analyzer import LLMAnalyzer
+        from src.model import CustomLLM, ModelConfig
+        import numpy as np
+
+        a1 = LLMAnalyzer()
+        feats = np.random.randn(35)
+        a1.model.train_step('mock_sample_test_key_persistence_12345', feats, 'high')
+        a1.save_model()
+
+        # Simulate fresh process/redeploy loading from DB
+        a2 = LLMAnalyzer.__new__(LLMAnalyzer)
+        a2.config = ModelConfig()
+        a2.model = CustomLLM(a2.config)
+        a2.cache_hits = a2.cache_misses = 0
+        a2.model_versions = {}; a2.active_version = 'default'
+        a2.ab_testing_enabled = False; a2.ab_test_groups = {'A':'default','B':'default'}
+        a2.version_performance = {}
+        a2.load_model()
+        assert a2.model.is_trained, 'Model failed to reload weights from DB snapshot'
+        print('✅ Database persistence round-trip verified successfully')
+        "
+
+    - name: Clean CI artifacts
+      if: always()
+      run: |
+        rm -f ci_test.db

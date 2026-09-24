@@ -1,0 +1,25 @@
+#core
+fastapi
+uvicorn[standard]
+gunicorn
+pydantic
+numpy
+scipy
+
+# Security & Auth
+python-jose[cryptography]
+python-multipart
+passlib[bcrypt]
+PyJWT
+
+# Data & Caching
+redis
+psycopg2-binary
+sqlalchemy
+pgvector
+alembic
+
+# Monitoring & System
+prometheus-client
+python-json-logger
+psutil
