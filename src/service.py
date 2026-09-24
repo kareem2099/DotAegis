@@ -67,11 +67,20 @@ app.include_router(analyze_router)
 app.include_router(train_router)
 app.include_router(stats_router)
 app.include_router(versioning_router)
-
 # ── Streaming (SSE) routes ────────────────────────────────────────────────────
 add_streaming_routes(app, analyzer, verify_extension_request)
 
-
+# ── Root Landing ──────────────────────────────────────────────────────────────
+@app.get("/", tags=["Root"])
+def root():
+    return {
+        "service": "DotAegis",
+        "name": "DotAegis - AI Secret Detection & Security Engine",
+        "status": "online",
+        "version": "2.1.3",
+        "health": "/health",
+        "docs": "https://dotsuite.dev/ar/product/dotaegis"
+    }
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
 @app.on_event("startup")
