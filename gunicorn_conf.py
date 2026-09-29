@@ -6,9 +6,9 @@ port = os.getenv("PORT", "8000")
 bind = f"0.0.0.0:{port}"
 
 # Workers Strategy
-# (2 x Cores) + 1 is the standard formula for CPU-bound tasks
-workers = 4
-# workers = multiprocessing.cpu_count() * 2 + 1
+# 1 worker is ideal for async FastAPI/Uvicorn to minimize memory usage on Railway
+# Can be customized via WEB_CONCURRENCY env variable
+workers = int(os.getenv("WEB_CONCURRENCY", "1"))
 worker_class = "uvicorn.workers.UvicornWorker"
 
 # Timeouts (Important for long analysis)
