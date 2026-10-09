@@ -2,13 +2,14 @@
 import hashlib
 import secrets
 import asyncio
+import json
 from datetime import datetime
 from fastapi import APIRouter, Depends, Request, HTTPException, status
 
 from ..models import (
     AnalyzeRequest, AnalyzeResponse, FeedbackRequest,
     HashSubmitRequest, FPReportRequest,
-    ExtensionRegisterRequest, ExtensionRegisterResponse
+    ExtensionRegisterRequest, ExtensionRegisterResponse, BlacklistReviewRequest
 )
 from ..analyzer import analyzer
 from ..security import get_api_key, check_rate_limit
@@ -41,11 +42,19 @@ async def extension_register(
         )
 
     try:
+        existing = db_manager.get_client_record(body.machine_id)
+        if existing:
+            if not existing['is_active']:
+                raise HTTPException(status_code=403, detail='Device credentials revoked')
+            authenticated_machine = await verify_extension_request(request)
+            if authenticated_machine != body.machine_id:
+                raise HTTPException(status_code=403, detail='Device ownership proof required')
         client_secret, is_new, created_at = db_manager.register_or_get_client(
             machine_id=body.machine_id,
             vscode_version=body.vscode_version or "",
             extension_version=body.extension_version or "",
-            client_ip=client_ip
+            client_ip=client_ip,
+            rotate_existing=bool(existing)
         )
         cache_registered_client(body.machine_id, client_secret)
 
@@ -55,10 +64,12 @@ async def extension_register(
             client_secret=client_secret,
             created_at=created_at.isoformat()
         )
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Registration failed: {str(e)}"
+            detail="Registration failed"
         )
 
 
@@ -67,7 +78,7 @@ def _build_response(confidence_level: str, secret_value: str, context: str,
     entropy  = analyzer._calculate_entropy(secret_value)
     category = analyzer._categorize_secret(secret_value)
     risk     = analyzer._assess_risk_level(secret_value, context)
-    is_likely = (confidence_level != 'low') or (entropy > 3.5)
+    is_likely = confidence_level in ('high', 'medium')
     reasoning = [f"Enhanced confidence: {confidence_level}", f"Entropy: {entropy:.2f}"]
     if extra_reasoning:
         reasoning.extend(extra_reasoning)
@@ -96,12 +107,8 @@ async def extension_analyze(
         )
         return _build_response(confidence_level, request.secret_value,
                                request.context, request_id)
-    except Exception as e:
-        return AnalyzeResponse(
-            enhanced_confidence="low", method="error", is_likely_secret=False,
-            category="Unknown", risk_level="low",
-            reasoning=[f"Error: {str(e)}"], request_id=request_id,
-        )
+    except Exception:
+        raise HTTPException(status_code=503, detail='Analysis temporarily unavailable')
 
 
 @router.post("/extension/feedback")
@@ -110,37 +117,14 @@ async def extension_feedback(
     machine_id: str = Depends(verify_extension_request),
 ):
     """HMAC-authenticated endpoint for sending feedback samples from the extension."""
-    stored_count = 0
-    for sample in request.samples:
-        try:
-            # Server-side feature recalculation for consistency
-            features_vector = analyzer.extract_features(
-                sample.secret_value, sample.context, sample.variable_name
-            )
-            features_list = features_vector.tolist()
-
-            db_manager.store_training_sample(
-                secret_hash=hashlib.sha256(sample.secret_value.encode()).hexdigest(),
-                context_hash=hashlib.sha256(sample.context.encode()).hexdigest(),
-                features=features_list,
-                label=sample.label,
-                user_action=sample.user_action,
-                confidence=0.5,
-                model_version=analyzer.active_version,
-            )
-
-            # Also add to the in-memory model training pool
-            analyzer.model.add_training_sample(sample.secret_value, features_list, sample.label)
-            stored_count += 1
-        except Exception as e:
-            print(f"Failed to process feedback sample from machine {machine_id}: {e}")
-
-    # Trigger training if we have enough new samples (consistent with train.py)
-    if stored_count > 0 and len(analyzer.model.training_samples) >= 5:
-        analyzer.model.train(analyzer.model.training_samples[-10:], epochs=1)
-        analyzer.save_model()
-
-    return {"status": "ok", "stored_samples": stored_count}
+    try:
+        accepted = db_manager.queue_feedback(machine_id, request.samples)
+        return {'status': 'queued', 'stored_samples': len(accepted), 'accepted_sample_ids': accepted,
+                'model_updated': False}
+    except PermissionError:
+        raise HTTPException(status_code=403, detail='Registered active device required')
+    except ValueError:
+        raise HTTPException(status_code=429, detail='Daily feedback quota exceeded')
 
 
 @router.post("/analyze", response_model=AnalyzeResponse,
@@ -211,13 +195,7 @@ async def blacklist_add(
 
     status = db_manager.submit_hash(body.hash, machine_id, weight)
 
-    # If it hit the vote threshold, verify independently with our own LLM
-    if status == "staged":
-        staging = db_manager.get_staging_entry(body.hash)
-        if staging and staging["vote_weight"] >= 3.0 and not staging["llm_verified"]:
-            asyncio.create_task(_verify_and_promote(body.hash))
-
-    return {"status": status}
+    return {"status": status, 'hash_version': 2, 'requires_admin_review': status == 'staged'}
 
 
 @router.get("/extension/blacklist")
@@ -226,7 +204,7 @@ async def blacklist_sync(
 ):
     """Return all promoted hashes for client-side cache."""
     hashes = db_manager.get_blacklist_hashes()
-    return {"hashes": hashes, "count": len(hashes)}
+    return {"hashes": hashes, "count": len(hashes), 'hash_version': 2}
 
 
 @router.post("/extension/blacklist/report_fp")
@@ -236,11 +214,14 @@ async def blacklist_report_fp(
 ):
     """Client reports a false positive. 5 votes → remove from blacklist."""
     count = db_manager.increment_fp_votes(body.hash, machine_id)
-    if count >= 5:
-        db_manager.remove_false_positive(body.hash)
-        db_manager.penalize_machine(machine_id, correct=False)
-        return {"status": "removed", "fp_votes": count}
-    return {"status": "recorded", "fp_votes": count}
+    return {"status": "recorded", "fp_votes": count, 'requires_admin_review': count >= 5}
+
+
+@router.post('/blacklist/remove', dependencies=[Depends(get_api_key), Depends(check_rate_limit)])
+def remove_blacklist_entry(body: FPReportRequest):
+    if not db_manager.remove_false_positive(body.hash):
+        raise HTTPException(status_code=503, detail='Blacklist removal failed')
+    return {'status': 'removed'}
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -257,16 +238,19 @@ def _get_machine_weight(machine_id: str) -> float:
     return 0.0
 
 
-async def _verify_and_promote(hash_val: str):
-    """Background task: server verifies hash with its own LLM before promoting."""
-    try:
-        # Note: We use a placeholder here for the evaluation logic. 
-        # In a real scenario, we'd need context to verify a hash properly.
-        dummy_value = "x" * 32  # placeholder high-entropy shape
-        confidence = analyzer.calculate_enhanced_confidence(
-            dummy_value, f"hash_verification:{hash_val}", "low"
-        )
-        if confidence in ("high", "critical", "medium"):
-            db_manager.mark_llm_verified(hash_val)
-    except Exception as e:
-        print(f"Background verification failed for {hash_val}: {e}")
+@router.post('/blacklist/review', dependencies=[Depends(get_api_key), Depends(check_rate_limit)])
+def review_blacklist(body: BlacklistReviewRequest):
+    """Admin supplies actual evidence transiently; a hash alone cannot be classified."""
+    raw = json.dumps([body.variable_name or '', body.secret_value], ensure_ascii=False, separators=(',', ':'))
+    expected = hashlib.sha256(raw.encode()).hexdigest()
+    if not secrets.compare_digest(expected, body.hash):
+        raise HTTPException(status_code=422, detail='Hash does not match the supplied evidence')
+    entry = db_manager.get_staging_entry(body.hash)
+    if not entry or entry['vote_weight'] < 3 or entry['distinct_voters'] < 3:
+        raise HTTPException(status_code=409, detail='Insufficient independent votes')
+    confidence = analyzer.calculate_enhanced_confidence(body.secret_value, body.context, 'low', body.variable_name)
+    if confidence != 'high':
+        raise HTTPException(status_code=409, detail='Evidence did not pass model verification')
+    if not db_manager.mark_llm_verified(body.hash):
+        raise HTTPException(status_code=503, detail='Blacklist persistence failed')
+    return {'status': 'promoted', 'hash_version': 2}

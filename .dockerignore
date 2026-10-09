@@ -1,0 +1,13 @@
+.git
+venv
+.venv
+**/__pycache__
+.env*
+.railway*
+*.db
+*.log
+htmlcov
+.pytest_cache
+.coverage
+src/models/llm_model.json
+test_auth.py

@@ -46,6 +46,7 @@ WORKDIR /app
 # Copy application code
 COPY src/ ./src/
 COPY gunicorn_conf.py .
+ENV ENVIRONMENT=production OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 
 # Create models directory and set permissions
 RUN mkdir -p src/models && \

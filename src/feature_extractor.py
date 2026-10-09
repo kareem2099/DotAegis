@@ -15,7 +15,6 @@ import numpy as np
 # ─── Known secret patterns ─────────────────────────────────────────────────────
 SECRET_PATTERNS = [
     (r'^sk-[a-zA-Z0-9]{20,}',          1.0,  'stripe_secret'),
-    (r'^pk_live_[a-zA-Z0-9]{20,}',     1.0,  'stripe_public'),
     (r'^AKIA[A-Z0-9]{16}',             1.0,  'aws_access_key'),
     (r'^ghp_[a-zA-Z0-9]{36}',          1.0,  'github_pat'),
     (r'^gho_[a-zA-Z0-9]{36}',          1.0,  'github_oauth'),
@@ -53,6 +52,7 @@ def extract(secret: str, context: str, variable_name: Optional[str] = None) -> n
       [25-29] Variable name signals
       [30-34] Structural analysis
     """
+    secret = secret.replace('\x00', '').replace('\r', '').replace('\n', ' ').strip()
     f = []
 
     # ── GROUP 1: Basic text (7 features) ──────────────────────────────────────
@@ -60,8 +60,8 @@ def extract(secret: str, context: str, variable_name: Optional[str] = None) -> n
     f.append(min(1.0, length / 100.0))                                # 0: normalised length
     f.append(1.0 if length >= 20 else length / 20.0)                  # 1: meets min length
     f.append(sum(1 for c in secret if c in string.digits) / max(1, length))   # 2: digit ratio
-    f.append(sum(1 for c in secret if c.isupper()) / max(1, length))  # 3: uppercase ratio
-    f.append(sum(1 for c in secret if c.islower()) / max(1, length))  # 4: lowercase ratio
+    f.append(sum(1 for c in secret if c in string.ascii_uppercase) / max(1, length))
+    f.append(sum(1 for c in secret if c in string.ascii_lowercase) / max(1, length))
     special = set('!#$%&()*+,-./:;<=>?@[\\]^_`{|}~')
     f.append(sum(1 for c in secret if c in special) / max(1, length)) # 5: special char ratio
     f.append(len(set(secret)) / max(1, length))                       # 6: unique char ratio
@@ -205,8 +205,8 @@ def _alternating_alpha_digit_score(text: str) -> float:
         return 0.0
     switches = sum(
         1 for i in range(len(text) - 1)
-        if (text[i].isalpha() and text[i+1].isdigit()) or
-           (text[i].isdigit() and text[i+1].isalpha())
+        if (text[i] in string.ascii_letters and text[i+1] in string.digits) or
+           (text[i] in string.digits and text[i+1] in string.ascii_letters)
     )
     return min(1.0, switches / (len(text) * 0.35))
 
@@ -232,9 +232,9 @@ def _character_class_balance(text: str) -> float:
     """API keys tend to use all char classes — alpha + digit (+ sometimes special)."""
     if not text:
         return 0.0
-    has_alpha = any(c.isalpha() for c in text)
-    has_digit = any(c.isdigit() for c in text)
-    has_upper = any(c.isupper() for c in text)
-    has_lower = any(c.islower() for c in text)
+    has_alpha = any(c in string.ascii_letters for c in text)
+    has_digit = any(c in string.digits for c in text)
+    has_upper = any(c in string.ascii_uppercase for c in text)
+    has_lower = any(c in string.ascii_lowercase for c in text)
     score = sum([has_alpha, has_digit, has_upper and has_lower]) / 3.0
     return score

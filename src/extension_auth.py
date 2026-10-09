@@ -1,7 +1,7 @@
 """
 Extension Authentication Module
 ================================
-Dynamic Per-Installation HMAC Authentication + Legacy Fallback.
+Per-installation HMAC authentication with ownership-proven rotation.
 No global secrets are exposed in the extension client code.
 
 How it works:
@@ -9,7 +9,7 @@ How it works:
 2. Extension stores its unique secret securely in VS Code SecretStorage.
 3. Extension signs every request body with HMAC-SHA256 using its device secret.
 4. Server verifies the signature against the registered device credential in DB / cache.
-5. Legacy fallback allows older 2.0.x / 2.1.0 extensions to function during transition.
+5. Unregistered and revoked devices cannot use shared-secret fallback.
 6. Rate limiting is applied per Machine ID, plus strict IP rate-limiting on registration.
 """
 
@@ -17,6 +17,7 @@ import hmac
 import hashlib
 import time
 import os
+import math
 from typing import Optional, Tuple
 from fastapi import HTTPException, Request, status
 from collections import defaultdict
@@ -24,10 +25,6 @@ from collections import defaultdict
 from .database import db_manager
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-# Legacy fallback secret for older extension versions (if set)
-EXTENSION_SHARED_SECRET = os.getenv("EXTENSION_SHARED_SECRET", "")
-LEGACY_EXTENSION_SHARED_SECRET = os.getenv("LEGACY_EXTENSION_SHARED_SECRET", EXTENSION_SHARED_SECRET)
-
 # Rate limiting configs
 RATE_LIMIT_PER_MACHINE_PER_MINUTE = int(os.getenv("EXTENSION_RATE_LIMIT", "30"))
 RATE_LIMIT_REGISTRATIONS_PER_IP_PER_HOUR = int(os.getenv("REGISTRATION_RATE_LIMIT_PER_IP", "10"))
@@ -49,7 +46,11 @@ def get_cached_client_credentials(machine_id: str) -> Tuple[Optional[str], bool]
     if machine_id in _client_credentials_cache:
         secret, is_active, cached_at = _client_credentials_cache[machine_id]
         if now - cached_at < CACHE_TTL_SECONDS:
-            return secret, is_active
+            # Revocation must take effect immediately, including cached credentials.
+            rec = db_manager.get_client_record(machine_id)
+            if rec:
+                return rec["client_secret"], rec["is_active"]
+            return None, False
 
     rec = db_manager.get_client_record(machine_id)
     if rec:
@@ -81,10 +82,10 @@ def verify_extension_signature(
     if not secret:
         return False
 
-    # 1. Reject requests older than 5 minutes (replay attack protection)
+    # 1. Require a timestamp within the five-minute freshness window.
     try:
         request_time = float(timestamp)
-        if abs(time.time() - request_time) > 300:
+        if not math.isfinite(request_time) or abs(time.time() - request_time) > 300:
             return False
     except (ValueError, TypeError):
         return False
@@ -150,7 +151,7 @@ async def verify_extension_request(request: Request) -> str:
     """
     FastAPI dependency that:
     1. Reads Machine-ID and HMAC signature headers
-    2. Resolves client secret (per-device registration or legacy shared secret)
+    2. Resolves the registered per-device credential and current active status
     3. Verifies HMAC signature
     4. Applies rate limiting per Machine ID
     
@@ -184,13 +185,7 @@ async def verify_extension_request(request: Request) -> str:
                 detail="Invalid request signature for registered device"
             )
     else:
-        # Fallback to legacy shared secret if configured (for older versions in grace period)
-        legacy_secret = LEGACY_EXTENSION_SHARED_SECRET or EXTENSION_SHARED_SECRET
-        if not legacy_secret or not verify_extension_signature(body, signature, timestamp, legacy_secret):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unregistered device or invalid request signature"
-            )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Device registration required')
 
     # 2. Rate limit by machine ID
     if not check_machine_rate_limit(machine_id):

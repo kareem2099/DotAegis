@@ -8,7 +8,7 @@ Handles PostgreSQL integration for model persistence and analytics.
 import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, JSON, Boolean, text
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, JSON, Boolean, text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
@@ -72,19 +72,19 @@ class SystemMetrics(Base):
 
 class CommunityBlacklist(Base):
     """Promoted hashes — synced to all clients."""
-    __tablename__ = "community_blacklist"
+    __tablename__ = "community_blacklist_v2"
 
     id          = Column(Integer, primary_key=True, index=True)
-    hash        = Column(String(16), unique=True, index=True)   # composite hash prefix
+    hash        = Column(String(64), unique=True, index=True)
     vote_count  = Column(Integer, default=0)
     promoted_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 class StagingQueue(Base):
     """Candidate hashes waiting for consensus before promotion."""
-    __tablename__ = "staging_queue"
+    __tablename__ = "staging_queue_v2"
 
     id           = Column(Integer, primary_key=True, index=True)
-    hash         = Column(String(16), unique=True, index=True)
+    hash         = Column(String(64), unique=True, index=True)
     machine_ids  = Column(JSON, default=list)   # list of voters
     vote_weight  = Column(Float, default=0.0)
     llm_verified = Column(Boolean, default=False)
@@ -97,9 +97,10 @@ class MachineReputation(Base):
     wrong      = Column(Integer, default=0)
 
 class FPVotes(Base):
-    __tablename__ = "fp_votes"
+    __tablename__ = "fp_votes_v2"
+    __table_args__ = (UniqueConstraint('hash', 'machine_id'),)
     id         = Column(Integer, primary_key=True)
-    hash       = Column(String(16), index=True)
+    hash       = Column(String(64), index=True)
     machine_id = Column(String(64))
 
 class ModelSnapshot(Base):
@@ -126,6 +127,19 @@ class ExtensionClient(Base):
     client_ip         = Column(String(45), nullable=True)
     created_at        = Column(DateTime, default=datetime.utcnow, index=True)
     last_seen_at      = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CommunityFeedback(Base):
+    __tablename__ = 'community_feedback_v2'
+    __table_args__ = (UniqueConstraint('machine_id', 'sample_id'),)
+    id = Column(Integer, primary_key=True)
+    machine_id = Column(String(128), nullable=False, index=True)
+    sample_id = Column(String(64), nullable=False)
+    features = Column(JSON, nullable=False)
+    label = Column(String(20), nullable=False)
+    user_action = Column(String(50), nullable=False)
+    status = Column(String(20), default='pending', index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 class DatabaseManager:
     """Manages database connections and operations."""
@@ -186,7 +200,10 @@ class DatabaseManager:
             print(f"✅ Database ({db_type}) initialized successfully and tables verified")
 
         except Exception as e:
-            print(f"❌ Database initialization failed: {e}")
+            print("❌ Database initialization failed")
+            self.engine = self.SessionLocal = None
+            if os.getenv('ENVIRONMENT') == 'production':
+                raise RuntimeError('Production database is unavailable') from e
             # Fallback to in-memory SQLite for development
             if not self.database_url.startswith('sqlite'):
                 print("🔄 Falling back to SQLite...")
@@ -542,7 +559,8 @@ class DatabaseManager:
             with self.get_session() as session:
                 e = session.query(StagingQueue).filter_by(hash=hash_val).first()
                 if not e: return None
-                return {"vote_weight": e.vote_weight, "llm_verified": e.llm_verified}
+                return {"vote_weight": e.vote_weight, "llm_verified": e.llm_verified,
+                        'distinct_voters': len(e.machine_ids)}
         except SQLAlchemyError:
             return None
 
@@ -556,7 +574,7 @@ class DatabaseManager:
     # ── Model Persistence (T05) ───────────────────────────────────────────────
 
     def save_model_to_db(self, weights_json: str, version: str = "active",
-                         num_samples: int = 0) -> bool:
+                         num_samples: int = 0, review_ids=None) -> bool:
         """
         Persist model weights JSON in the database.
         Overwrites the existing 'active' snapshot so there's always one record.
@@ -580,6 +598,13 @@ class DatabaseManager:
                         num_samples=num_samples,
                     )
                     session.add(snap)
+                if review_ids:
+                    changed = session.query(CommunityFeedback).filter(
+                        CommunityFeedback.id.in_(review_ids), CommunityFeedback.status == 'pending').update(
+                            {'status': 'approved'}, synchronize_session=False)
+                    if changed != len(review_ids):
+                        session.rollback()
+                        return False
                 session.commit()
                 print(f"💾 Model snapshot '{version}' saved to DB ({num_samples} samples)")
                 return True
@@ -608,7 +633,8 @@ class DatabaseManager:
     # ── Extension Client Handshake & Auth ──────────────────────────────────────
 
     def register_or_get_client(self, machine_id: str, vscode_version: str = "",
-                               extension_version: str = "", client_ip: str = "") -> tuple[str, bool, datetime]:
+                               extension_version: str = "", client_ip: str = "",
+                               rotate_existing: bool = False) -> tuple[str, bool, datetime]:
         """
         Idempotent client registration.
         If machine_id is already registered, updates metadata and returns (client_secret, is_new=False, created_at).
@@ -622,9 +648,10 @@ class DatabaseManager:
                 now = datetime.utcnow()
 
                 if client:
+                    if not client.is_active or not rotate_existing:
+                        raise ValueError('Existing credentials require authenticated rotation')
                     client.client_secret = new_secret
                     client.last_seen_at = now
-                    client.is_active = True
                     if vscode_version:
                         client.vscode_version = vscode_version
                     if extension_version:
@@ -681,6 +708,31 @@ class DatabaseManager:
                     session.commit()
         except SQLAlchemyError:
             pass
+
+    def queue_feedback(self, machine_id: str, samples) -> list[str]:
+        """Idempotent per-device queue with a durable daily sample quota."""
+        with self.get_session() as session:
+            device = session.query(ExtensionClient).filter_by(machine_id=machine_id).with_for_update().first()
+            if device is None or not device.is_active:
+                raise PermissionError('Registered active device required')
+            cutoff = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            daily = session.query(CommunityFeedback).filter(
+                CommunityFeedback.machine_id == machine_id,
+                CommunityFeedback.created_at >= cutoff).count()
+            accepted = []
+            for sample in samples:
+                existing = session.query(CommunityFeedback).filter_by(
+                    machine_id=machine_id, sample_id=sample.id).first()
+                if not existing:
+                    if daily >= 100:
+                        raise ValueError('Daily feedback quota exceeded')
+                    session.add(CommunityFeedback(machine_id=machine_id, sample_id=sample.id,
+                        features=sample.features, label=sample.label, user_action=sample.user_action))
+                    session.flush()
+                    daily += 1
+                accepted.append(sample.id)
+            session.commit()
+            return accepted
 
 
 # Global database manager instance

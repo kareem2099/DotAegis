@@ -26,13 +26,10 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import Request, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from .models import AnalyzeRequest
 
 
-class StreamAnalyzeRequest(BaseModel):
-    secret_value: str
-    context: str
-    variable_name: Optional[str] = None
+StreamAnalyzeRequest = AnalyzeRequest
 
 
 def _sse(data: dict) -> str:
@@ -140,12 +137,13 @@ async def _stream_analysis(
         confidence_level = analyzer.calculate_enhanced_confidence(
             secret_value, context, 'low', variable_name
         )
-    except Exception as e:
-        confidence_level = 'low'
+    except Exception:
+        yield _sse({'stage': 'error', 'request_id': request_id, 'error': 'Analysis unavailable'})
+        return
 
     category  = analyzer._categorize_secret(secret_value)
     risk      = analyzer._assess_risk_level(secret_value, context)
-    is_likely = (confidence_level != 'low') or (entropy > 3.5) or (best_score >= 0.9)
+    is_likely = confidence_level in ('high', 'medium')
 
     yield _sse({
         'stage':    'llm_analysis',

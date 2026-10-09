@@ -19,10 +19,6 @@ if __name__ == "__main__":
         # In production, set this via environment variable (e.g., in Railway or Docker)
         os.environ['API_KEY'] = ''
 
-    if not os.getenv('JWT_SECRET'):
-        # In production, set this via environment variable
-        os.environ['JWT_SECRET'] = 'change-this-in-production-for-security'
-
     if not os.getenv('RATE_LIMIT_REQUESTS_PER_MINUTE'):
         os.environ['RATE_LIMIT_REQUESTS_PER_MINUTE'] = '60'
 

@@ -1,236 +1,131 @@
-# 🛡️ DotAegis
+# DotAegis
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/kareem2099/DotAegis/main/resources/banner.png" alt="DotAegis Banner" width="700" onerror="this.style.display='none'"/>
-</p>
+DotSuite's FastAPI service for classifying potential credentials. Used by the
+[DotEnvy VS Code extension](https://github.com/kareem2099/dotenvy).
 
-<p align="center">
-  <strong>High-Throughput Neural Engine for Real-Time Secret Detection, Threat Intelligence & Anti-Poisoning</strong>
-</p>
+**Version 2.2.3 · feature schema 2 · Python 3.11+**
 
-<p align="center">
-  <a href="https://github.com/kareem2099/DotAegis/actions/workflows/test-and-deploy.yml"><img src="https://github.com/kareem2099/DotAegis/actions/workflows/test-and-deploy.yml/badge.svg" alt="CI/CD Status"/></a>
-  <img src="https://img.shields.io/badge/Version-2.1.3-brightgreen.svg" alt="Version 2.1.3"/>
-  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"/></a>
-  <img src="https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python&logoColor=white" alt="Python Version"/>
-  <img src="https://img.shields.io/badge/FastAPI-0.100+-009688.svg?logo=fastapi&logoColor=white" alt="FastAPI"/>
-  <a href="https://github.com/kareem2099/dotenvy"><img src="https://img.shields.io/badge/Ecosystem-DotSuite-00b4d8.svg" alt="DotSuite"/></a>
-</p>
+## Detection and learning
 
----
+A small NumPy transformer classifies 35 numeric properties of a candidate,
+its sanitized context, and its variable name. It recognizes patterns; it does
+not verify whether a credential is valid, and cannot guarantee detection of
+all providers or formats. Raw key text is not a model input or stored training record.
 
-## 📖 Overview
+- The release includes `src/models/bootstrap_v2.json.gz`, trained exclusively
+  on reproducible synthetic data. Its checksum and independent synthetic
+  validation results are in `bootstrap_v2.manifest.json`. Those results are
+  not a real-world accuracy guarantee.
+- Database checkpoints take priority over the bootstrap. Incompatible older
+  token-based checkpoints are skipped. New checkpoints include numeric replay
+  samples and Adam state, so reviewed learning survives restarts.
+- Inference results are keyed by the actual model-weight revision, preventing
+  old cached verdicts after training, reset, or version changes.
+- Exact gradients cover attention softmax, residual branches, feed-forward
+  layers, LayerNorm, feature embeddings, and classification. Tests compare
+  each parameter group against numerical derivatives.
 
-**DotAegis** is an enterprise-grade AI microservice engineered to detect, classify, and neutralize API keys, tokens, database connection strings, and high-entropy credentials in real time. 
+## Privacy and community feedback
 
-Built with **FastAPI**, **PyTorch/NumPy transformer architectures**, and a **35-dimension feature extractor**, DotAegis powers the intelligent backend of the [DotEnvy](https://github.com/kareem2099/dotenvy) VS Code extension and integrates seamlessly into CI/CD security pipelines.
+Cloud analysis is opt-in in DotEnvy. When enabled, candidates and sanitized
+context are processed transiently. Request bodies and raw candidate values are
+not retained in analysis logs, feedback tables, replay samples, or checkpoints.
+Numeric features still describe properties of a value; they should not be
+called anonymous or equivalent to storing no data.
 
----
+`POST /extension/feedback` accepts **numeric features only**. Raw keys and code
+fields are rejected. Labels must match the user's action. Each batch contains
+1–20 samples, each with a stable ID, feature schema 2, and 35 finite values in
+[0, 1]. A registered device may add at most 100 new samples per UTC day; retries
+are idempotent. Feedback enters a durable review queue and never changes the
+shared model automatically. An administrator reviews samples before approving
+training. Do not approve untrusted samples without independent validation.
 
-## ⚡ Core Features
+The full SHA-256 community fingerprint covers `[variableName, completeValue]`.
+Version 2 tables isolate old prefix-based entries. Votes stage candidates;
+admin-authenticated review must supply matching real evidence and a high model
+verdict before promotion. False-positive votes also require admin removal, so newly
+registered identities cannot delete trusted entries automatically. A hash alone cannot be classified. The evidence is
+not persisted. Community membership describes a reviewed detection pattern,
+not proof that a key was leaked or that it is active.
 
-- 🧠 **35-Feature Neural Classifier**: Extracts Shannon entropy, bi-gram/tri-gram distribution, context risk signals, structural clues, and pattern heuristics.
-- 🤝 **Dynamic Zero-Shared-Secret Handshake**: Ephemeral per-device registration storing unique client HMAC credentials securely inside the client's OS Keychain (`SecretStorage`).
-- 🛡️ **Community Blacklist & Anti-Poisoning**: Consensus-driven hash blacklist with reputation scoring, preventing malicious poisoning attempts.
-- ⚡ **Two-Tier Smart Caching**: Ultra-fast in-memory L1 LRU cache coupled with L2 Redis caching for sub-millisecond repeated analysis.
-- 📡 **Server-Sent Events (SSE) Streaming**: Progressive real-time confidence streaming (`/extension/analyze/stream`) across 5 inspection stages.
-- 🔒 **Defense-in-Depth Security**: Constant-time HMAC verification (`hmac.compare_digest`), sliding timestamp replay defense (5-min window), and strict rate limiters.
+## Authentication
 
----
+Each installation registers once through `/extension/register` and receives a
+random per-device HMAC credential, stored by DotEnvy in VS Code SecretStorage.
+Re-registering an existing ID requires a request signed by that device's
+current credential. Revoked devices cannot self-reactivate. Lost credentials
+require a new installation ID; machine IDs are never ownership proof.
 
-## 🏛️ 4-Layer Inspection Pipeline
+Extension requests use `X-Machine-ID`, `X-Extension-Timestamp`, and
+`X-Extension-Signature`. The signature is HMAC-SHA256 over `timestamp + "." + body`.
+Timestamps must be finite and within five minutes. This freshness window is not
+single-use replay prevention. Shared-secret legacy authentication is disabled.
 
-DotAegis executes a layered filter pipeline that processes credentials at maximum speed with zero wasted compute:
+Admin endpoints require `Authorization: Bearer <API_KEY>`. Optional JWT admin
+access requires an explicitly configured secret of at least 32 characters and
+an admin token type. Missing JWT configuration disables JWT authentication;
+there is no default signing secret.
 
-```
-[ Incoming Request / Keystroke ]
-               │
-               ▼
-┌──────────────────────────────┐
-│  L1: Instant Regex Gate      │  ──▶ Hit? (100% Confirmed Secret — 0ms latency)
-└──────────────┬───────────────┘
-               │ (Miss)
-               ▼
-┌──────────────────────────────┐
-│  L2: Community Threat Cache  │  ──▶ Hit? (Known Leaked Hash — <1ms lookup)
-└──────────────┬───────────────┘
-               │ (Miss)
-               ▼
-┌──────────────────────────────┐
-│  L3: Shannon Entropy Filter  │  ──▶ Shannon Entropy < 3.5? (Skip Neural Compute)
-└──────────────┬───────────────┘
-               │ (High Entropy)
-               ▼
-┌──────────────────────────────┐
-│  L4: DotAegis Neural Model   │  ──▶ 35-Feature Transformer Analysis & Scoring
-└──────────────────────────────┘
-```
+## Endpoints
 
----
+| Route | Access | Behavior |
+| --- | --- | --- |
+| `GET /health`, `/readiness` | Public | 200 only when model is trained and DB responds; otherwise 503 |
+| `GET /stats` | Public | Model, training, cache, and aggregate service status |
+| `POST /extension/register` | New device / signed rotation | Create or rotate per-device credentials |
+| `POST /extension/analyze`, `/extension/analyze/stream` | Device HMAC | Classify a candidate transiently |
+| `POST /extension/feedback` | Device HMAC | Queue numeric observations; returns acknowledged sample IDs |
+| `GET /feedback/pending`, `POST /feedback/review` | Admin | Inspect, approve, or reject queued observations |
+| `POST /analyze`, `/train` | Admin | Analyze / train trusted samples |
+| `POST /reset` | Admin | Restore the validated bootstrap |
+| `POST /extension/blacklist/add`, `/report_fp`; `GET /extension/blacklist` | Device HMAC | Stage full hashes, report false positives, or sync v2 entries |
+| `POST /blacklist/review`, `/blacklist/remove` | Admin | Review matching evidence or remove false positives |
+| `POST /cache/clear` | Admin | Delete Aegis cache keys only |
 
-## 📁 Repository Structure
+## Run and test
 
-```
-DotAegis/
-├── Dockerfile                  # Multi-stage hardened production container
-├── docker-compose.yml          # Full-stack orchestration (Service + Redis + Postgres + Nginx)
-├── nginx.conf                  # Edge reverse proxy with security headers & rate limiting
-├── railway.json                # Railway.app continuous deployment specification
-├── requirements.txt            # Python dependencies
-├── main.py                     # ASGI entrypoint for development & production
-├── test_local.py               # Automated local/remote test suite (18 test scenarios)
-├── train_model.py              # Neural model training & backpropagation pipeline
-└── src/
-    ├── service.py              # FastAPI app definition & middleware orchestration
-    ├── analyzer.py             # LLMAnalyzer core orchestrator
-    ├── model.py                # Custom neural network architecture & weights
-    ├── attention.py            # Self-attention mechanism implementation
-    ├── feature_extractor.py    # 35-feature extraction engine
-    ├── extension_auth.py       # Per-device HMAC signature verification & handshake
-    ├── security.py             # Internal API key authentication & sliding rate limiters
-    ├── database.py             # SQLAlchemy models (SQLite fallback / PostgreSQL production)
-    ├── cache_manager.py        # Two-tier cache manager (L1 LRU + L2 Redis)
-    ├── streaming.py            # Server-Sent Events (SSE) streaming handler
-    ├── performance_monitor.py  # Runtime memory & latency metrics collector
-    └── routes/
-        ├── analyze.py          # /analyze, /extension/analyze, /extension/register
-        ├── stats.py            # /health, /stats, /metrics, /cache/*
-        ├── train.py            # /train (human-in-the-loop continuous learning)
-        └── versioning.py       # A/B model testing & version deployment
+```sh
+python -m pip install -r requirements.txt
+ENVIRONMENT=development API_KEY=local-admin-key python main.py
+# In another terminal:
+python -m pip install pytest httpx
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m pytest -q tests
+python scripts/smoke_service.py --url http://localhost:8000
 ```
 
----
+The HTTP smoke test uses synthetic candidates and leaves one observation in the
+review queue without updating model weights. On an isolated `ENVIRONMENT=test`
+service, set `AE_TEST_ADMIN_KEY` and add `--review` to exercise atomic approvals
+and idempotent review. Release verification also checks checkpoint restoration
+after restarting a PostgreSQL-backed test service.
 
-## 🚀 Quick Start
+For a reproducible bootstrap rebuild:
 
-### 1. Local Development (Virtualenv)
-
-```bash
-# Clone the repository
-git clone https://github.com/kareem2099/DotAegis.git
-cd DotAegis
-
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# Copy environment template
-cp .env.example .env
-
-# Run development server with hot-reload
-python main.py
+```sh
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/build_bootstrap.py --epochs 20
 ```
 
-The service will start on `http://localhost:8000`. Interactive documentation is available at `http://localhost:8000/docs`.
+Rebuilding writes a release checkpoint, not the production database. Review its
+validation manifest and run the regression suite before shipping it.
 
----
+## Railway deployment
 
-### 2. Docker Compose (Full Stack)
+Set `ENVIRONMENT=production`, `API_KEY`, and a persistent PostgreSQL
+`DATABASE_URL`. Configure `REDIS_URL` using the Redis service reference for
+shared caching; when unavailable, inference uses bounded in-process LRU caching.
+Redis degradation is visible in `/stats` and does not invalidate the trained model.
+Use `WEB_CONCURRENCY=1` while this service owns in-process training/version state.
 
-Run DotAegis alongside PostgreSQL, Redis, and an Nginx reverse proxy:
+The Docker image bundles the tested bootstrap. On first boot, or after an
+incompatible schema upgrade, the service persists that bootstrap to PostgreSQL.
+Production refuses missing admin authentication, unavailable/nonpersistent DB,
+or an untrained model. Configure Railway's health check as `/readiness`.
+Training and feedback status are published atomically to the database; shutdown
+never overwrites newer weights with a stale worker snapshot.
 
-```bash
-docker-compose up -d
-```
+Schema-v2 feedback and blacklist payloads require DotEnvy **2.2.3+**. Older clients
+can continue registered analysis, but must upgrade to submit the new payloads.
+Registration rotation without device proof is intentionally rejected.
 
-Check service health:
-```bash
-curl http://localhost:8000/health
-```
-
----
-
-### 3. Deploy to Railway
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app)
-
-1. Connect your GitHub repository to Railway.
-2. Railway detects `railway.json` and the `Dockerfile` automatically.
-3. Add environment variables in the **Variables** tab (refer to `.env.example`).
-4. DotAegis deploys in seconds with automated SSL.
-
----
-
-## ⚙️ Configuration & Environment Variables
-
-| Variable | Description | Default | Required in Production |
-|:---|:---|:---|:---:|
-| `ENVIRONMENT` | Runtime mode (`development` or `production`) | `development` | Yes |
-| `API_KEY` | Comma-separated API keys for admin/internal endpoints | `""` | Yes |
-| `JWT_SECRET` | 256-bit secret used for internal cryptographic tokens | Generated | Yes |
-| `DATABASE_URL` | SQLAlchemy connection string (PostgreSQL or SQLite) | `sqlite:///./llm_service.db` | Recommended |
-| `REDIS_URL` | Redis connection URL for L2 distributed cache | `""` (L1 LRU fallback) | Optional |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE` | Max requests per minute per IP address | `60` | No |
-| `EXTENSION_RATE_LIMIT` | Max requests per minute per extension device | `30` | No |
-| `REGISTRATION_RATE_LIMIT_PER_IP`| Max device handshakes allowed per hour per IP | `10` | No |
-| `LOG_LEVEL` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` | No |
-| `PORT` | HTTP port to bind the server | `8000` | No |
-
----
-
-## 📡 API Reference
-
-### Extension Endpoints (Dynamic Handshake & HMAC Signed)
-
-| Method | Endpoint | Description | Auth Required |
-|:---|:---|:---|:---:|
-| `POST` | `/extension/register` | Dynamic device registration handshake | IP Rate Limit (10/hr) |
-| `POST` | `/extension/analyze` | High-confidence secret detection | HMAC Signature (`X-Extension-*`) |
-| `POST` | `/extension/analyze/stream` | Real-time SSE 5-stage analysis streaming | HMAC Signature (`X-Extension-*`) |
-| `POST` | `/extension/feedback` | User confirmation/FP training samples | HMAC Signature (`X-Extension-*`) |
-| `GET` | `/extension/blacklist` | Sync community threat blacklist | HMAC Signature (`X-Extension-*`) |
-| `POST` | `/extension/blacklist/add` | Submit detected hash to staging queue | HMAC Signature (`X-Extension-*`) |
-| `POST` | `/extension/blacklist/report_fp`| Report false-positive hash | HMAC Signature (`X-Extension-*`) |
-
-### Service & Administrative Endpoints
-
-| Method | Endpoint | Description | Auth Required |
-|:---|:---|:---|:---:|
-| `GET` | `/health` | Liveness & readiness probe | Public |
-| `GET` | `/stats` | Service, model, and cache analytics | Public |
-| `GET` | `/metrics` | Prometheus metrics endpoint | Public |
-| `POST` | `/analyze` | Direct API secret analysis | `X-API-KEY` or Bearer Token |
-| `POST` | `/train` | Continuous learning training step | `X-API-KEY` |
-| `POST` | `/reset` | Reset model weights to baseline | `X-API-KEY` |
-| `POST` | `/cache/clear` | Invalidate L1 & L2 cache stores | `X-API-KEY` |
-| `POST` | `/database/cleanup` | Purge aged analytics data | `X-API-KEY` |
-
----
-
-## 🧪 Testing
-
-Run the automated test suite against a running local or staging instance:
-
-```bash
-# Run against local development server
-python test_local.py --url http://localhost:8000
-
-# Run model self-training & validation (15 epochs)
-python train_model.py --local --epochs 15
-```
-
----
-
-## 🔗 The DotSuite Ecosystem
-
-DotAegis is part of the **DotSuite** developer toolchain:
-
-- **[DotEnvy](https://github.com/kareem2099/dotenvy)** — Intelligent `.env` & secret manager for VS Code.
-- **[DotGhostBoard](https://github.com/kareem2099/DotGhostBoard)** — Secure clipboard & developer productivity hub.
-- **[DotFetch](https://github.com/kareem2099/DotFetch)** — Fast, lightweight API exploration & testing tool.
-
----
-
-## 📄 License
-
-This project is licensed under the **Apache-2.0 License**. See the [LICENSE](LICENSE) file for details.
-
----
-
-<p align="center">
-  Crafted with precision by <strong><a href="https://github.com/kareem2099">Kareem Ehab</a></strong> &bull; <strong><a href="https://www.dotsuite.dev/en">DotSuite</a></strong>
-</p>
+Licensed under Apache-2.0. See [LICENSE](LICENSE).

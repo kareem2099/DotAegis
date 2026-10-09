@@ -13,7 +13,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 class SecurityManager:
     def __init__(self):
         self.api_keys: set = set()
-        self.jwt_secret = os.getenv('JWT_SECRET', 'default-jwt-secret-change-in-production')
+        self.jwt_secret = os.getenv('JWT_SECRET', '')
         self.rate_limits: dict = {}
         self.max_requests_per_minute = int(os.getenv('RATE_LIMIT_REQUESTS_PER_MINUTE', '60'))
 
@@ -26,6 +26,8 @@ class SecurityManager:
         return api_key in self.api_keys
 
     def generate_jwt_token(self, username: str, expires_delta: timedelta = None) -> str:
+        if len(self.jwt_secret) < 32:
+            raise ValueError('JWT authentication is not configured')
         if expires_delta is None:
             expires_delta = timedelta(hours=1)
         expire = datetime.utcnow() + expires_delta
@@ -33,6 +35,8 @@ class SecurityManager:
         return jwt.encode(payload, self.jwt_secret, algorithm="HS256")
 
     def verify_jwt_token(self, token: str) -> Optional[dict]:
+        if len(self.jwt_secret) < 32:
+            return None
         try:
             return jwt.decode(token, self.jwt_secret, algorithms=["HS256"])
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
@@ -80,7 +84,7 @@ async def get_api_key(credentials: HTTPAuthorizationCredentials = Depends(securi
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key required")
     if credentials.scheme.lower() == "bearer":
         payload = security_manager.verify_jwt_token(credentials.credentials)
-        if payload:
+        if payload and payload.get('type') == 'admin':
             return payload
         if security_manager.verify_api_key(credentials.credentials):
             return credentials.credentials

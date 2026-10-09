@@ -43,7 +43,7 @@ _is_prod = os.getenv('ENVIRONMENT') == 'production'
 app = FastAPI(
     title="DotAegis - AI Secret Detection & Security Engine",
     description="High-performance AI security engine for real-time secret detection and reputation intelligence",
-    version="2.1.3",
+    version="2.2.3",
     docs_url=None  if _is_prod else "/docs",
     redoc_url=None if _is_prod else "/redoc",
 )
@@ -77,7 +77,7 @@ def root():
         "service": "DotAegis",
         "name": "DotAegis - AI Secret Detection & Security Engine",
         "status": "online",
-        "version": "2.1.3",
+        "version": "2.2.3",
         "health": "/health",
         "docs": "https://dotsuite.dev/ar/product/dotaegis"
     }
@@ -87,6 +87,17 @@ def root():
 async def startup_event():
     db_manager.initialize()
     security_manager.load_api_keys()
+    if _is_prod:
+        if int(os.getenv('WEB_CONCURRENCY', '1')) != 1:
+            raise RuntimeError('Online training requires WEB_CONCURRENCY=1')
+        if not security_manager.api_keys:
+            raise RuntimeError('Production requires API_KEY')
+        if not db_manager.database_url.startswith('postgresql://'):
+            raise RuntimeError('Production requires persistent PostgreSQL')
+        if not analyzer.model.is_trained:
+            raise RuntimeError('Production requires a trained model')
+    if not analyzer.model_loaded_from_db:
+        analyzer.save_model()
     print(f"🔐 Security initialized — {len(security_manager.api_keys)} API key(s) loaded")
     print(f"⚡ Rate limit: {security_manager.max_requests_per_minute} req/min")
     try:
@@ -97,6 +108,5 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    print("🛑 Shutting down — saving model...")
-    analyzer.save_model()
-    print("💾 Model saved")
+    # Updates are persisted when published; stale workers must not overwrite them.
+    print('🛑 Shutting down')

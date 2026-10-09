@@ -3,6 +3,8 @@ import os
 import re
 import math
 import hashlib
+import threading
+import copy
 from typing import List, Dict, Any, Optional
 
 import numpy as np
@@ -20,7 +22,11 @@ class LLMAnalyzer:
     def __init__(self):
         self.config = ModelConfig()
         self.model  = CustomLLM(self.config)
+        self.lock = threading.RLock()
+        self.model_loaded_from_db = False
         self.load_model()
+        self.revision = self._model_revision()
+        self._default_model = self.model
 
         self.cache_hits   = 0
         self.cache_misses = 0
@@ -47,18 +53,52 @@ class LLMAnalyzer:
                 tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
                 tmp.write(json_str)
                 tmp.close()
-                self.model.load_model(tmp.name)
-                os.unlink(tmp.name)
-                return
+                try:
+                    self.model.load_model(tmp.name)
+                    if not self.model.is_trained:
+                        raise ValueError('Database checkpoint is not trained')
+                    self.model_loaded_from_db = True
+                    return
+                finally:
+                    os.unlink(tmp.name)
         except Exception as e:
             print(f"⚠️  DB model load failed, trying local file: {e}")
 
         # 2. Fallback: local JSON file
         path = os.path.join(os.path.dirname(__file__), "models", "llm_model.json")
-        if os.path.exists(path):
-            self.model.load_model(path)
+        try:
+            if os.path.exists(path):
+                self.model.load_model(path)
+                return
+        except (ValueError, KeyError):
+            print('Legacy local checkpoint skipped; loading validated bootstrap')
+        import gzip, tempfile
+        bootstrap = os.path.join(os.path.dirname(__file__), 'models', 'bootstrap_v2.json.gz')
+        if os.path.exists(bootstrap):
+            import json
+            manifest_path = os.path.join(os.path.dirname(bootstrap), 'bootstrap_v2.manifest.json')
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            with open(bootstrap, 'rb') as f:
+                if hashlib.sha256(f.read()).hexdigest() != manifest['sha256']:
+                    raise ValueError('Bootstrap checksum mismatch')
+            with gzip.open(bootstrap, 'rt') as f, tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+                tmp.write(f.read())
+            try:
+                self.model.load_model(tmp.name)
+                if not self.model.is_trained:
+                    raise ValueError('Bootstrap is not trained')
+            finally:
+                os.unlink(tmp.name)
 
-    def save_model(self):
+    def _model_revision(self):
+        digest = hashlib.sha256()
+        for name, parameter in self.model.parameters().items():
+            digest.update(name.encode())
+            digest.update(parameter.tobytes())
+        return digest.hexdigest()
+
+    def save_model(self, review_ids=None):
         """
         Save model weights to both DB (primary) and local JSON (fallback).
         """
@@ -68,6 +108,7 @@ class LLMAnalyzer:
 
         # Write to local file first (always works, needed for dev)
         self.model.save_model(path)
+        self.revision = self._model_revision()
 
         # Then persist to DB (survives redeploys)
         try:
@@ -75,10 +116,12 @@ class LLMAnalyzer:
             with open(path, 'r') as f:
                 weights_json = f.read()
             num_samples = len(self.model.training_samples)
-            db_manager.save_model_to_db(weights_json, version="active",
-                                        num_samples=num_samples)
+            if not db_manager.save_model_to_db(weights_json, version="active", num_samples=num_samples, review_ids=review_ids):
+                raise RuntimeError('Model database persistence failed')
         except Exception as e:
-            print(f"⚠️  DB model save failed (local file still saved): {e}")
+            if os.getenv('ENVIRONMENT') == 'production':
+                raise RuntimeError('Model database persistence failed') from e
+            print('⚠️ Model saved locally; database persistence unavailable')
 
     # ── Feature extraction ────────────────────────────────────────────────────
     def extract_features(self, secret_value: str, context: str,
@@ -89,7 +132,13 @@ class LLMAnalyzer:
     def calculate_enhanced_confidence(self, secret_value: str, context: str,
                                        traditional_confidence: str,
                                        variable_name: Optional[str] = None) -> str:
-        key    = enhanced_cache.make_key(secret_value, context, variable_name)
+        with self.lock:
+            return self._calculate_confidence(secret_value, context, traditional_confidence, variable_name)
+
+    def _calculate_confidence(self, secret_value, context, traditional_confidence, variable_name):
+        if not self.model.is_trained:
+            raise RuntimeError('Model is not trained')
+        key = enhanced_cache.make_key(secret_value, context, variable_name, self.revision)
         cached = enhanced_cache.get(key)
         if cached is not None:
             self.cache_hits += 1
@@ -188,13 +237,7 @@ class LLMAnalyzer:
         if version_name in self.model_versions:
             return False
         try:
-            v = CustomLLM(self.config)
-            v.token_embedding   = self.model.token_embedding.copy()
-            v.feature_embedding = self.model.feature_embedding.copy()
-            v.pos_encoding      = self.model.pos_encoding.copy()
-            v.classifier        = self.model.classifier.copy()
-            v.classifier_bias   = self.model.classifier_bias.copy()
-            v.layers            = self.model.layers.copy()
+            v = copy.deepcopy(self.model)
             self.model_versions[version_name] = v
             self.version_performance[version_name] = {
                 'total_predictions': 0, 'correct_predictions': 0,
@@ -208,9 +251,10 @@ class LLMAnalyzer:
     def switch_model_version(self, version_name: str) -> bool:
         if version_name not in self.model_versions and version_name != "default":
             return False
-        self.active_version = version_name
-        if version_name != "default":
-            self.model = self.model_versions[version_name]
+        with self.lock:
+            self.active_version = version_name
+            self.model = self._default_model if version_name == 'default' else self.model_versions[version_name]
+            self.revision = self._model_revision()
         self.cache_hits = self.cache_misses = 0
         return True
 

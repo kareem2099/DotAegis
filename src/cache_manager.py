@@ -116,10 +116,10 @@ class EnhancedCacheManager:
     # ── Public API ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def make_key(secret: str, context: str, variable_name: Optional[str] = None) -> str:
+    def make_key(secret: str, context: str, variable_name: Optional[str] = None, revision: str = '') -> str:
         """Privacy-safe cache key (never stores raw secrets)."""
-        raw = f"{secret}|{context}|{variable_name or ''}"
-        return hashlib.sha256(raw.encode()).hexdigest()
+        raw = json.dumps([secret, context, variable_name or ''], ensure_ascii=False)
+        return f'aegis:v2:{revision}:' + hashlib.sha256(raw.encode()).hexdigest()
 
     def get(self, key: str) -> Optional[Any]:
         # L1 first
@@ -163,7 +163,7 @@ class EnhancedCacheManager:
         l2_cleared = 0
         if self._redis_available:
             try:
-                keys = self._redis.keys('*')
+                keys = list(self._redis.scan_iter(match='aegis:v2:*', count=200))
                 if keys:
                     l2_cleared = self._redis.delete(*keys)
             except Exception:

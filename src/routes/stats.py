@@ -25,8 +25,16 @@ router = APIRouter()
 @router.get("/health")
 def health():
     from datetime import datetime
-    return {"status": "ok", "llm_ready": True,
-            "timestamp": datetime.utcnow().isoformat(), "version": "2.1.3"}
+    ready = analyzer.model.is_trained
+    try:
+        from sqlalchemy import text
+        with db_manager.get_session() as session:
+            session.execute(text('SELECT 1'))
+    except Exception:
+        ready = False
+    from fastapi.responses import JSONResponse
+    return JSONResponse({'status': 'ok' if ready else 'unavailable', 'llm_ready': ready,
+        'timestamp': datetime.utcnow().isoformat(), 'version': '2.2.3'}, status_code=200 if ready else 503)
 
 @router.get("/health/detailed")
 def detailed_health():
@@ -34,7 +42,7 @@ def detailed_health():
 
 @router.get("/readiness")
 def readiness():
-    return check_readiness()
+    return health()
 
 @router.get("/liveness")
 def liveness():
@@ -107,7 +115,7 @@ def get_stats():
             },
             "service": {
                 "status":             "active",
-                "version":            "2.1.3",
+                "version":            "2.2.3",
                 "environment":        os.getenv('ENVIRONMENT', 'development'),
                 "model_version":      analyzer.active_version,
                 "ab_testing_enabled": analyzer.ab_testing_enabled,

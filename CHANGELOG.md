@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.3] - 2026-10-09
+
+### Fixed
+- Require device ownership proof for credential rotation; prevent revoked-device reactivation and disable legacy shared-secret authentication.
+- Bundle a trained, checksum-verified synthetic bootstrap; return unavailable health status for untrained models or failed databases. Require production PostgreSQL and admin authentication.
+- Train and infer from the same 35-feature representation. Remove raw key tokens from model inputs and replay checkpoints.
+- Replace approximate backpropagation with exact gradients; validate every parameter group numerically.
+- Queue feature-only community feedback for admin review, with consistent labels, finite-value and batch validation, stable IDs, and durable daily quotas. Publish approvals and snapshots atomically.
+- Use full-value SHA-256 fingerprints and separate v2 blacklist tables. Replace placeholder verification with admin review of matching transient evidence.
+- Include model revisions in cache keys; restore independent model versions and numeric replay/optimizer state on reload. Scope Redis deletion to Aegis keys.
+- Disable JWT authentication when no strong signing secret is configured; require explicit admin token type.
+
+### Validation
+- Add security, privacy, gradient, persistence, HTTP contract, quota, and independent synthetic-validation regression tests.
+- Share Python/TypeScript feature parity fixtures with DotEnvy 2.2.3.
+- Verify the Python 3.11 Docker runtime, PostgreSQL-backed admin review, repeat-review idempotence, and checkpoint restoration after restart.
+
 ## [2.1.3] - 2026-09-24
 
 ### **Security Hardening & Secret Rotation Architecture**

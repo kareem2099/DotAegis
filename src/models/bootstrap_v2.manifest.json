@@ -1,0 +1,18 @@
+{
+  "input_mode": "features_v2",
+  "feature_schema": 2,
+  "sha256": "5ca0d0161e4bd3a652f011f83d36747819c4e89466bc3f7fd96845b9ac273288",
+  "training_samples": 216,
+  "epochs": 20,
+  "validation": {
+    "samples": 81,
+    "binary_accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "tp": 42,
+    "tn": 39,
+    "fp": 0,
+    "fn": 0,
+    "dataset": "synthetic-independent-seed-v2; not a real-world accuracy guarantee"
+  }
+}
