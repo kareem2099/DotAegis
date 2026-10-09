@@ -92,7 +92,7 @@ async def startup_event():
             raise RuntimeError('Online training requires WEB_CONCURRENCY=1')
         if not security_manager.api_keys:
             raise RuntimeError('Production requires API_KEY')
-        if not db_manager.database_url.startswith('postgresql://'):
+        if db_manager.engine.dialect.name != 'postgresql':
             raise RuntimeError('Production requires persistent PostgreSQL')
         if not analyzer.model.is_trained:
             raise RuntimeError('Production requires a trained model')

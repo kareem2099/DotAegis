@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.2.3] - 2026-10-09
 
 ### Fixed
+- Select the installed psycopg2 PostgreSQL driver explicitly for Railway URLs and create the runtime user's home directory for Gunicorn.
 - Require device ownership proof for credential rotation; prevent revoked-device reactivation and disable legacy shared-secret authentication.
 - Bundle a trained, checksum-verified synthetic bootstrap; return unavailable health status for untrained models or failed databases. Require production PostgreSQL and admin authentication.
 - Train and infer from the same 35-feature representation. Remove raw key tokens from model inputs and replay checkpoints.

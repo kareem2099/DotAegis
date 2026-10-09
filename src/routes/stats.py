@@ -107,6 +107,7 @@ def get_stats():
                 "redis_memory":       redis_stats.get("memory_used", "unknown"),
             },
             "database": {
+                "backend": db_manager.engine.dialect.name if db_manager.engine else 'unavailable',
                 "analytics_summary":      analytics_summary,
                 "training_samples_count": db_manager.count_training_samples(),
             },

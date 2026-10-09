@@ -154,9 +154,11 @@ class DatabaseManager:
     def _initialize_database(self):
         """Initialize database connection and create tables."""
         try:
-            # Fix legacy Heroku/Railway postgres:// URI scheme for SQLAlchemy
+            # Select the installed driver explicitly; SQLAlchemy defaults vary.
             if self.database_url.startswith('postgres://'):
-                self.database_url = self.database_url.replace('postgres://', 'postgresql://', 1)
+                self.database_url = self.database_url.replace('postgres://', 'postgresql+psycopg2://', 1)
+            elif self.database_url.startswith('postgresql://'):
+                self.database_url = self.database_url.replace('postgresql://', 'postgresql+psycopg2://', 1)
 
             # Configure connection pool for production
             connect_args = {}

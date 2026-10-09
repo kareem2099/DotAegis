@@ -14,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', required=True)
     parser.add_argument('--production', action='store_true')
+    parser.add_argument('--postgres', action='store_true', help='Require an actual PostgreSQL connection')
     parser.add_argument('--review', action='store_true', help='Test admin review on an isolated test service')
     args = parser.parse_args()
     if args.review and args.production:
@@ -43,6 +44,8 @@ def main():
     status, stats = request('/stats')
     assert status == 200 and stats['model']['is_trained'] and stats['model']['input_mode'] == 'features_v2'
     assert stats['training']['training_samples_count'] > 0
+    if args.production or args.postgres:
+        assert stats['database']['backend'] == 'postgresql'
     if args.production:
         assert stats['service']['environment'] == 'production'
         assert stats['cache']['redis_status'] == 'connected'

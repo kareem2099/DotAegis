@@ -131,6 +131,23 @@ def test_nan_timestamp_is_rejected():
     assert not verify_extension_signature(b'body', signature, 'nan', 'test')
 
 
+@pytest.mark.parametrize('scheme', ['postgres', 'postgresql'])
+def test_railway_postgresql_urls_select_installed_driver(monkeypatch, scheme):
+    from src.database import DatabaseManager
+    import src.database as database
+    manager = DatabaseManager()
+    manager.database_url = scheme + '://test:test@localhost/test'
+    monkeypatch.setenv('ENVIRONMENT', 'production')
+    captured = []
+    def capture_engine(url, **kwargs):
+        captured.append(url)
+        raise RuntimeError('stop before network connection')
+    monkeypatch.setattr(database, 'create_engine', capture_engine)
+    with pytest.raises(RuntimeError, match='Production database is unavailable'):
+        manager.initialize()
+    assert captured == ['postgresql+psycopg2://test:test@localhost/test']
+
+
 def feedback(sample_id='sample-1'):
     return {'id': sample_id, 'feature_schema': 2,
             'features': extract('SyntheticRandomKey0123456789', 'API_KEY="[REDACTED]"', 'API_KEY').tolist(),
@@ -274,7 +291,7 @@ def test_production_database_failure_never_falls_back(monkeypatch):
     monkeypatch.setattr(database_module, 'create_engine', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('unavailable')))
     with pytest.raises(RuntimeError, match='Production database'):
         manager.initialize()
-    assert manager.database_url.startswith('postgresql://') and manager.engine is None
+    assert manager.database_url.startswith('postgresql+psycopg2://') and manager.engine is None
 
 
 def test_bootstrap_is_trained_and_passes_independent_validation(tmp_path):

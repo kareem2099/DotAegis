@@ -2,7 +2,7 @@
 # ===================================================
 
 # Stage 1: Builder stage for dependencies
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -25,7 +25,7 @@ RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
 # Stage 2: Runtime stage (production)
-FROM python:3.11-slim as runtime
+FROM python:3.11-slim AS runtime
 
 # Install runtime dependencies only
 RUN apt-get update && apt-get install -y \
@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean
 
 # Create non-root user for security
-RUN groupadd -r llmuser && useradd -r -g llmuser llmuser
+RUN groupadd -r llmuser && useradd -r -m -g llmuser llmuser
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv

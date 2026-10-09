@@ -116,6 +116,8 @@ Set `ENVIRONMENT=production`, `API_KEY`, and a persistent PostgreSQL
 shared caching; when unavailable, inference uses bounded in-process LRU caching.
 Redis degradation is visible in `/stats` and does not invalidate the trained model.
 Use `WEB_CONCURRENCY=1` while this service owns in-process training/version state.
+Plain `postgres://` and `postgresql://` URLs are normalized to the explicitly
+installed `psycopg2` driver, independent of SQLAlchemy's default driver choice.
 
 The Docker image bundles the tested bootstrap. On first boot, or after an
 incompatible schema upgrade, the service persists that bootstrap to PostgreSQL.
