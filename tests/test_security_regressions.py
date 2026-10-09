@@ -131,6 +131,18 @@ def test_nan_timestamp_is_rejected():
     assert not verify_extension_signature(b'body', signature, 'nan', 'test')
 
 
+def test_offline_extension_export_excludes_training_records(tmp_path):
+    from scripts.export_extension_model import export
+    cases, size = export(tmp_path)
+    payload = json.loads(gzip.decompress((tmp_path / 'aegis-v2.json.gz').read_bytes()))
+    assert set(payload) == {'format', 'config', 'parameters', 'is_trained'}
+    assert payload['is_trained'] and size < 1024 * 1024
+    assert len(cases) == 22 and all(len(c['probabilities']) == 4 for c in cases)
+    manifest = json.loads((tmp_path / 'aegis-v2.manifest.json').read_text())
+    assert manifest['training_source'] == 'synthetic-only'
+    assert hashlib.sha256((tmp_path / 'aegis-v2.json.gz').read_bytes()).hexdigest() == manifest['sha256']
+
+
 @pytest.mark.parametrize('scheme', ['postgres', 'postgresql'])
 def test_railway_postgresql_urls_select_installed_driver(monkeypatch, scheme):
     from src.database import DatabaseManager
@@ -336,3 +348,77 @@ def test_feature_schema_matches_shared_fixture():
     rows = json.loads((Path(__file__).parent / 'feature-parity.json').read_text())
     for row in rows:
         assert np.allclose(extract(row['value'], row['context'], row['name']), row['features'], atol=1e-6)
+
+
+def test_numeric_feedback_trains_release_and_changes_local_predictions(tmp_path):
+    """Real authenticated HTTP feedback -> durable review -> downloadable changed weights."""
+    import base64
+    import httpx
+    from src.service import app
+    from src.security import security_manager
+    security_manager.load_api_keys()
+    bootstrap = Path(__file__).resolve().parents[1] / 'src/models/bootstrap_v2.json.gz'
+    checkpoint = tmp_path / 'bootstrap.json'
+    checkpoint.write_bytes(gzip.decompress(bootstrap.read_bytes()))
+    analyzer.model = CustomLLM(ModelConfig())
+    analyzer.model.load_model(str(checkpoint))
+    analyzer._default_model = analyzer.model
+    analyzer.revision = analyzer._model_revision()
+    features = extract('sk-SyntheticReviewValue0123456789AbCdEf', 'API_KEY=', 'API_KEY').tolist()
+    before = analyzer.model.forward('', features)['probabilities'][3]
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            first = await client.get('/model/release')
+            assert first.status_code == 200
+            old_etag = first.headers['etag']
+            release = first.json()
+            compressed = base64.b64decode(release['weights_base64'])
+            assert hashlib.sha256(compressed).hexdigest() == release['manifest']['sha256']
+            weights = json.loads(gzip.decompress(compressed))
+            assert set(weights) == {'format', 'config', 'parameters', 'is_trained'}
+            assert len(first.content) < 2 * 1024 * 1024
+            assert (await client.get('/model/release', headers={'If-None-Match': old_etag})).status_code == 304
+            registration = await client.post('/extension/register', json={'machine_id': 'learning-cycle-device'})
+            secret = registration.json()['client_secret']
+            sample = {'id': 'synthetic-correction', 'feature_schema': 2, 'features': features,
+                      'label': 'false_positive', 'user_action': 'marked_false_positive'}
+            raw = json.dumps({'samples': [sample]}, separators=(',', ':')).encode()
+            timestamp = str(time.time())
+            signed = {'Content-Type': 'application/json', 'X-Machine-ID': 'learning-cycle-device',
+                      'X-Extension-Timestamp': timestamp,
+                      'X-Extension-Signature': hmac.new(secret.encode(), timestamp.encode()+b'.'+raw, hashlib.sha256).hexdigest()}
+            queued = await client.post('/extension/feedback', content=raw, headers=signed)
+            assert queued.status_code == 200 and queued.json()['accepted_sample_ids'] == [sample['id']]
+            assert analyzer.model.forward('', features)['probabilities'][3] == before
+            admin = {'Authorization': 'Bearer synthetic-admin-test-key'}
+            pending = (await client.get('/feedback/pending', headers=admin)).json()['samples']
+            reviewed = await client.post('/feedback/review', headers=admin, json={'ids': [pending[0]['id']], 'approve': True})
+            assert reviewed.status_code == 200 and reviewed.json()['model_updated']
+            new = await client.get('/model/release', headers={'If-None-Match': old_etag})
+            assert new.status_code == 200 and new.headers['etag'] != old_etag
+            after_weights = json.loads(gzip.decompress(base64.b64decode(new.json()['weights_base64'])))
+            assert after_weights['parameters'] != weights['parameters']
+            with db_manager.get_session() as session:
+                assert session.query(CommunityFeedback).first().status == 'approved'
+            return new.json()
+    release = asyncio.run(asyncio.wait_for(run(), timeout=30))
+    assert analyzer.model.forward('', features)['probabilities'][3] > before
+    # Load the approved artifact in the actual Node worker, comparing with Python.
+    extension = Path(__file__).resolve().parents[2] / 'DotEnvy'
+    if (extension / 'out/utils/localModelService.js').exists():
+        import subprocess
+        directory = tmp_path / 'approved-model'
+        directory.mkdir()
+        (directory / 'aegis-v2.json.gz').write_bytes(base64.b64decode(release['weights_base64']))
+        (directory / 'aegis-v2.manifest.json').write_text(json.dumps(release['manifest']))
+        script = """
+const {LocalModelService} = require(process.argv[1]);
+const worker = new LocalModelService(process.argv[2]);
+worker.predict(JSON.parse(process.argv[3])).then(p => {console.log(JSON.stringify(p));worker.dispose();})
+.catch(e => {console.error(e);worker.dispose();process.exitCode=1;});
+"""
+        result = subprocess.run(['node', '-e', script, str(extension / 'out/utils/localModelService.js'),
+                                 str(directory), json.dumps(features)], check=True, capture_output=True, text=True, timeout=20)
+        actual = json.loads(result.stdout)
+        assert np.allclose(actual['probabilities'], analyzer.model.forward('', features)['probabilities'], atol=1e-8)

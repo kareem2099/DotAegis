@@ -3,9 +3,17 @@
 DotSuite's FastAPI service for classifying potential credentials. Used by the
 [DotEnvy VS Code extension](https://github.com/kareem2099/dotenvy).
 
-**Version 2.2.3 · feature schema 2 · Python 3.11+**
+**Version 2.2.4 · feature schema 2 · Python 3.11+**
 
 ## Detection and learning
+
+DotEnvy **2.2.4+** runs inference locally on full-candidate features, while
+DotAegis continues to train the shared classifier. With explicit opt-in the
+extension sends new numeric corrections to `/extension/feedback`; after admin
+review, the server trains and publishes updated inference weights. Clients
+can download those weights without submitting scanner inputs or registering a
+device. The extension never submits raw candidates/code to the analysis APIs.
+Legacy APIs and historical records remain; there is no blanket zero-storage claim.
 
 A small NumPy transformer classifies 35 numeric properties of a candidate,
 its sanitized context, and its variable name. It recognizes patterns; it does
@@ -25,9 +33,33 @@ all providers or formats. Raw key text is not a model input or stored training r
   layers, LayerNorm, feature embeddings, and classification. Tests compare
   each parameter group against numerical derivatives.
 
+## Live inference releases and client improvement loop
+
+`GET /model/release` is public and read-only. It publishes the **current trained
+model**, including approved community learning, as a JSON manifest plus
+`weights_base64` (gzip JSON, `dotenvy-local-transformer-v1`). No replay records,
+installation data, feedback or optimizer state is exported. The manifest
+contains schema 2, SHA-256, weight revision, 35-feature count and label order.
+`ETag`/`If-None-Match` return 304 for an unchanged revision. Incompatible or
+untrained models return 503. Extension loaders require the supported 64-hidden,
+two-layer, four-head architecture and validate shapes/checksums/finite numbers.
+
+The bundled export script still uses reproducible synthetic bootstrap weights
+for an offline fallback. Runtime releases use the active trained checkpoint,
+not a frozen copy of that bootstrap. DotEnvy checks startup/hourly (independently
+switchable), starts replacement workers before switching and clears scan caches.
+
+Community samples remain untrusted until reviewed. An administrator uses
+`GET /feedback/pending` and `POST /feedback/review` with
+`{"ids":[123],"approve":true}` under admin Bearer authentication. Review triggers
+training and durable publication atomically; rejection records the decision
+without training. An upload alone does not train the model. Do not mass-approve
+unexamined labels; evaluate effects on independent examples. Numeric patterns
+can generalize but cannot distinguish every pair of otherwise similar values.
+
 ## Privacy and community feedback
 
-Cloud analysis is opt-in in DotEnvy. When enabled, candidates and sanitized
+In DotEnvy 2.2.3 and earlier, cloud analysis is opt-in. When enabled, candidates and sanitized
 context are processed transiently. Request bodies and raw candidate values are
 not retained in analysis logs, feedback tables, replay samples, or checkpoints.
 Numeric features still describe properties of a value; they should not be
@@ -109,6 +141,18 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/build_bootstrap.py --epo
 Rebuilding writes a release checkpoint, not the production database. Review its
 validation manifest and run the regression suite before shipping it.
 
+Export the synthetic bootstrap for an offline extension release:
+
+```sh
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python scripts/export_extension_model.py \
+  --output /path/to/dotenvy/resources/models \
+  --fixtures /path/to/dotenvy/test/model-parity.json
+```
+
+The export verifies the bootstrap checksum, strips replay and optimizer data,
+and creates an inference manifest and Python probability fixtures for the
+TypeScript runtime. Release model updates through the extension package.
+
 ## Railway deployment
 
 Set `ENVIRONMENT=production`, `API_KEY`, and a persistent PostgreSQL
@@ -126,8 +170,10 @@ or an untrained model. Configure Railway's health check as `/readiness`.
 Training and feedback status are published atomically to the database; shutdown
 never overwrites newer weights with a stale worker snapshot.
 
-Schema-v2 feedback and blacklist payloads require DotEnvy **2.2.3+**. Older clients
-can continue registered analysis, but must upgrade to submit the new payloads.
+Legacy clients submitting feedback or community hashes must use schema-v2
+payloads. Earlier clients can continue registered analysis but must update
+outdated payloads. DotEnvy **2.2.4+** submits only optional numeric corrections
+and public model-release requests; it never calls raw analysis or hash-sync APIs.
 Registration rotation without device proof is intentionally rejected.
 
 Licensed under Apache-2.0. See [LICENSE](LICENSE).

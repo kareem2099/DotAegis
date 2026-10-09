@@ -31,6 +31,7 @@ from .routes.analyze    import router as analyze_router
 from .routes.train      import router as train_router
 from .routes.stats      import router as stats_router
 from .routes.versioning import router as versioning_router
+from .routes.model_release import router as model_release_router
 
 try:
     from .performance_monitor import start_performance_monitoring
@@ -43,7 +44,7 @@ _is_prod = os.getenv('ENVIRONMENT') == 'production'
 app = FastAPI(
     title="DotAegis - AI Secret Detection & Security Engine",
     description="High-performance AI security engine for real-time secret detection and reputation intelligence",
-    version="2.2.3",
+    version="2.2.4",
     docs_url=None  if _is_prod else "/docs",
     redoc_url=None if _is_prod else "/redoc",
 )
@@ -67,6 +68,7 @@ app.include_router(analyze_router)
 app.include_router(train_router)
 app.include_router(stats_router)
 app.include_router(versioning_router)
+app.include_router(model_release_router)
 # ── Streaming (SSE) routes ────────────────────────────────────────────────────
 add_streaming_routes(app, analyzer, verify_extension_request)
 
@@ -77,7 +79,7 @@ def root():
         "service": "DotAegis",
         "name": "DotAegis - AI Secret Detection & Security Engine",
         "status": "online",
-        "version": "2.2.3",
+        "version": "2.2.4",
         "health": "/health",
         "docs": "https://dotsuite.dev/ar/product/dotaegis"
     }

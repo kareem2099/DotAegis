@@ -34,7 +34,7 @@ def health():
         ready = False
     from fastapi.responses import JSONResponse
     return JSONResponse({'status': 'ok' if ready else 'unavailable', 'llm_ready': ready,
-        'timestamp': datetime.utcnow().isoformat(), 'version': '2.2.3'}, status_code=200 if ready else 503)
+        'timestamp': datetime.utcnow().isoformat(), 'version': '2.2.4'}, status_code=200 if ready else 503)
 
 @router.get("/health/detailed")
 def detailed_health():
@@ -116,7 +116,7 @@ def get_stats():
             },
             "service": {
                 "status":             "active",
-                "version":            "2.2.3",
+                "version":            "2.2.4",
                 "environment":        os.getenv('ENVIRONMENT', 'development'),
                 "model_version":      analyzer.active_version,
                 "ab_testing_enabled": analyzer.ab_testing_enabled,

@@ -40,7 +40,7 @@ def main():
             return error.code, json.load(error)
 
     status, health = request('/readiness')
-    assert status == 200 and health['llm_ready'] and health['version'] == '2.2.3', health
+    assert status == 200 and health['llm_ready'] and health['version'] == '2.2.4', health
     status, stats = request('/stats')
     assert status == 200 and stats['model']['is_trained'] and stats['model']['input_mode'] == 'features_v2'
     assert stats['training']['training_samples_count'] > 0

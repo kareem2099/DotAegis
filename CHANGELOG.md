@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.4] - 2026-10-09
+
+### Added
+- Publish current trained inference weights via public `GET /model/release`, with revision ETags and checksums. Exclude replay, feedback/device records and optimizer state.
+- Keep reviewed numeric community training active while DotEnvy classifies locally and downloads updated weights. Preserve durable training/review authentication.
+- Export a validated synthetic bootstrap and Python probability fixtures for bundled offline inference.
+- Verify authenticated numeric feedback, approval, changed weights and predictions, conditional releases and Python/Node worker parity in one integration flow.
+
+### Documentation
+- Explain the local-inference/shared-training boundary, optional numeric feedback, live weight updates, retained server data and legacy raw-analysis APIs.
+
 ## [2.2.3] - 2026-10-09
 
 ### Fixed
